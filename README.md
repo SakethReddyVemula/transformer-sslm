@@ -62,7 +62,17 @@ India + currency + Indian rupee # # =
 Netherlands + leaderName + Mark Rutte # # =
 ```
 
+## Before Starting
 
+1. Load the virtual environment:
+```bash
+source ~/sslm-venv/bin/activate
+```
+
+2. Set environmental variables:
+```bash
+export PT_DATA_DIR=~/data-bin/
+```
 
 
 ## Instructions
