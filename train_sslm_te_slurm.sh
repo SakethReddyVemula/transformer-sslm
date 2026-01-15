@@ -35,7 +35,7 @@ export MASTER_ADDR=$master_addr
 echo "MASTER_ADDR="$MASTER_ADDR 
 
 # WandB Configuration
-export WANDB_API_KEY="c8a7a539cb5fed3df89b21d71956ca6b4befd2a5"
+export WANDB_API_KEY="wandb-key"
 export WANDB_PROJECT="tsslm-te-pretraining"
 
 # Run Training
