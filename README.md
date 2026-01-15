@@ -71,9 +71,34 @@ source ~/sslm-venv/bin/activate
 
 2. Set environmental variables:
 ```bash
-export PT_DATA_DIR=~/data-bin/
+export PT_DATA_DIR=~/data-bin
+export PT_MODEL_DIR=~/model-bin
 ```
 
+3. Few modifications to the fairseq:
+- Inside `fairseq/fairseq/distributed/utils.py`, add:
+    ```python
+    def distributed_main(i, main, cfg: FairseqConfig, kwargs):
+        # When using torchrun/torch.distributed.launch, LOCAL_RANK is set
+        if "LOCAL_RANK" in os.environ:
+            cfg.distributed_training.device_id = int(os.environ["LOCAL_RANK"])
+        else:
+            cfg.distributed_training.device_id = i
+        
+        ...
+    ```
+- Inside `fairseq/fairseq_cli/train.py`, add:
+    ```python
+    def main(cfg: FairseqConfig) -> None:
+        if isinstance(cfg, argparse.Namespace):
+            cfg = convert_namespace_to_omegaconf(cfg)
+
+        # Enable wandb logging by default
+        if cfg.common.wandb_project is None:
+            cfg.common.wandb_project = "transformer-sslm"
+
+        ...
+    ```
 
 ## Instructions
 
@@ -89,10 +114,10 @@ python fairseq/fairseq_cli/preprocess.py  \
 2. Pretrain T-SSLM.
 
 ```shell
-python fairseq/fairseq_cli/train.py $PT_DATA_DIR \
+python3 fairseq/fairseq_cli/train.py $PT_DATA_DIR/bin \
     --task subword_segmental_language_modeling \
     --arch transformer_sslm \
-    --target-lang xh --save-interval 5 \
+    --target-lang te --save-interval 5 \
     --criterion subword_segmental_lm_cross_entropy \
     --max-epoch 40 --share-decoder-input-output-embed \
     --optimizer adam --adam-betas '(0.9, 0.98)' --weight-decay 0.01 --clip-norm 0.0 \
