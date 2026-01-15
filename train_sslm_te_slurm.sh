@@ -57,5 +57,6 @@ torchrun  \
     --max-tokens 4096 --vocabs-path $PT_MODEL_DIR --update-freq 64 \
     --keep-best-checkpoints 1  \
     --max-seg-len 5 --lexicon-max-size 10000 \
+    --log-interval 1 --fp16 \
     --wandb-project $WANDB_PROJECT \
     --save-dir $PT_MODEL_DIR
