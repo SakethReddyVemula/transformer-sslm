@@ -267,6 +267,44 @@ class SubwordSegmentalLanguageModel(FairseqLanguageModel):
     def build_model(cls, args, task):
         """Build a new model instance."""
 
+        # Sync top-level args to decoder config (fix for CLI args not propagating)
+        if hasattr(args, "decoder"):
+            if safe_getattr(args, "decoder_embed_dim", None) is not None:
+                args.decoder.embed_dim = args.decoder_embed_dim
+                # Also sync input/output dims if they are supposed to match embed_dim
+                args.decoder.input_dim = args.decoder_embed_dim
+                args.decoder.output_dim = args.decoder_embed_dim
+                # CRITICAL FIX: Update the top-level arg as well, because from_namespace
+                # might copy it back to the config, shadowing our change above.
+                args.decoder_embed_dim = args.decoder.embed_dim
+
+            if safe_getattr(args, "decoder_ffn_embed_dim", None) is not None:
+                args.decoder.ffn_embed_dim = args.decoder_ffn_embed_dim
+                args.decoder_ffn_embed_dim = args.decoder.ffn_embed_dim # Sync back
+
+            if safe_getattr(args, "decoder_layers", None) is not None:
+                args.decoder.layers = args.decoder_layers
+                args.decoder_layers = args.decoder.layers # Sync back
+
+            if safe_getattr(args, "decoder_attention_heads", None) is not None:
+                args.decoder.attention_heads = args.decoder_attention_heads
+                args.decoder_attention_heads = args.decoder.attention_heads # Sync back
+
+            if safe_getattr(args, "decoder_output_dim", None) is not None:
+                args.decoder.output_dim = args.decoder_output_dim
+                args.decoder_output_dim = args.decoder.output_dim # Sync back
+            
+            # Sync max_seg_len from task config if available
+            if hasattr(task, "cfg") and hasattr(task.cfg, "max_seg_len"):
+                args.decoder.max_seg_len = task.cfg.max_seg_len
+            elif hasattr(args, "max_seg_len"): # Fallback
+                args.decoder.max_seg_len = args.max_seg_len
+
+        # Enforce consistency if sharing embeddings
+        if safe_getattr(args, "share_decoder_input_output_embed", False):
+            args.decoder.output_dim = args.decoder.embed_dim
+            args.decoder_output_dim = args.decoder.embed_dim
+
         if args.decoder_layers_to_keep:
             args.decoder_layers = len(args.decoder_layers_to_keep.split(","))
 
@@ -1109,18 +1147,20 @@ class SubwordSegmentalDecoderBase(FairseqIncrementalDecoder):
         for seg_end in range(self.max_seg_len - 1,
                              seq_len + self.max_seg_len - 1):  # end of first possible seg to end of sequence
 
+            # Vectorized segment length calculation
+            # Extract the window of alphas ending at seg_end
+            # Shape: (max_seg_len, batch_size)
             seg_target_alphas = target_alphabet[seg_end - self.max_seg_len + 1: seg_end + 1]
-            seg_lens.append([])
-            for seq_num in range(batch_size):
-                if not seg_target_alphas[0][seq_num]:
-                    seg_len = 1
-                else:
-                    for j in range(len(seg_target_alphas)):
-                        if seg_target_alphas[j][seq_num]:
-                            seg_len = j + 1
-                        else:
-                            break
-                seg_lens[-1].append(seg_len)
+            
+            # Calculate cumulative product to find contiguous True values from the start
+            cumprod = torch.cumprod(seg_target_alphas.long(), dim=0)
+            lengths = torch.sum(cumprod, dim=0)
+            
+            # If the first element is False, length should be 1 (as per original logic)
+            # In that case cumprod is all 0s, sum is 0.
+            lengths = torch.clamp(lengths, min=1)
+            
+            seg_lens.append(lengths)
 
             seg_embeddings.append(
                 input_embeddings[seg_end - self.max_seg_len + 1: seg_end + 2].clone())
@@ -1136,6 +1176,8 @@ class SubwordSegmentalDecoderBase(FairseqIncrementalDecoder):
                                                                                device=self.device)))
 
         seg_embeddings = torch.stack(seg_embeddings, dim=1).view(self.max_seg_len + 1, -1, input_embeddings.shape[2])
+        seg_lens = torch.stack(seg_lens, dim=0) # (num_windows, batch_size)
+        
         return seg_embeddings, seg_target_ids, seg_lens, seq_lens
 
     def compute_lex_lprobs(

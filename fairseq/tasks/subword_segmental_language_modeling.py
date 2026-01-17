@@ -414,17 +414,26 @@ class SubwordSegmentalLanguageModelingTask(FairseqTask):
 
         # Read input sentences.
         tgt_path = data_path[0: data_path.rindex("/") + 1] + split + "." + self.cfg.target_lang
+        logger.info(f"Reading data from {tgt_path}...")
         tgt_lines = []
         with open(tgt_path, encoding=ENCODING) as file:
-            for line in file:
+            for i, line in enumerate(file):
                 tgt_lines.append(line.strip())
+                if (i + 1) % 100000 == 0:
+                    logger.info(f"Read {i + 1} lines...")
+        logger.info(f"Finished reading {len(tgt_lines)} lines.")
 
         # Now split this into continuous segments of length tokens_per_sample, but don't split in the middle of a word
         def distribute_lines(lines):
+            logger.info("Distributing lines into samples...")
             sequences = []
             current_sequence = ""
+            
+            start_time = time.time()
+            for i, line in enumerate(lines):
+                if (i + 1) % 100000 == 0:
+                    logger.info(f"Distributed {i + 1}/{len(lines)} lines... ({time.time() - start_time:.2f}s)")
 
-            for line in lines:
                 words = line.split()  # Split the line into words
                 for word in words:
                     if len(current_sequence) + len(word) + 1 > self.cfg.tokens_per_sample:  # +1 for space or newline
@@ -437,7 +446,8 @@ class SubwordSegmentalLanguageModelingTask(FairseqTask):
 
             if current_sequence.strip():  # Add any remaining content to the sequences
                 sequences.append(current_sequence.strip())
-
+            
+            logger.info(f"Finished distributing lines. Created {len(sequences)} samples.")
             return sequences
 
         tgt_samples = distribute_lines(tgt_lines)
@@ -445,13 +455,19 @@ class SubwordSegmentalLanguageModelingTask(FairseqTask):
         tgt_sentences = []
         tgt_lengths = []
 
-        for sample in tgt_samples:
+        logger.info("Tokenizing samples...")
+        start_time = time.time()
+        for i, sample in enumerate(tgt_samples):
+            if (i + 1) % 10000 == 0:
+                logger.info(f"Tokenized {i + 1}/{len(tgt_samples)} samples... ({time.time() - start_time:.2f}s)")
+
             # Tokenize the sentence, splitting on spaces
             tokens = self.tgt_dict.encode_line(
                 sample, line_tokenizer=char_tokenize, add_if_not_exist=False,
             )
             tgt_sentences.append(tokens.type(torch.int64))
             tgt_lengths.append(tokens.numel())
+        logger.info("Finished tokenizing.")
 
         logger.info(
             "{} {} {} examples".format(
