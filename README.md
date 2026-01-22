@@ -19,7 +19,7 @@ Merge the SSLM files with fairseq.
 
 ```shell
 git clone https://github.com/pytorch/fairseq.git
-git clone **{link released upon publication}/transformer-sslm**
+git clone https://github.com/francois-meyer/transformer-sslm
 
 # change to 806855bf660ea748ed7ffb42fe8dcc881ca3aca0 branch
 cd fairseq
