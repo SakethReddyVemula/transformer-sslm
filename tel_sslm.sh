@@ -1,29 +1,59 @@
 #!/bin/bash
-#SBATCH --job-name=transformer-sslm-fast
-#SBATCH --ntasks-per-node=32
-#SBATCH --gres=gpu:A100-SXM4:2
-#SBATCH --time=24:00:00
-#SBATCH --output=tsslm_ta_fast.err
-#SBATCH --output=tsslm_ta_fast.out
+#SBATCH --job-name=tel-sslm
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=20
+#SBATCH --gres=gpu:4
+#SBATCH --mem-per-cpu=2048
+#SBATCH --time=5-00:00:00
+#SBATCH --output=tsslm_pretraning.txt
 #SBATCH --mail-user=saketh.vemula@research.iiit.ac.in
 #SBATCH --mail-type=ALL
-#SBATCH --export=ALL,JOB_DESCRIPTION="Machine translation for Indian languages faces challenges such as rich morphology agglutination free word order and limited annotated resources This project focuses on tokenization strategies for Sanskrit Tamil translation incorporating linguistic knowledge from grammar literature vocabulary and parallel corpora Effective tokenization enables better representation of morphological units compound words and verse structure supporting accurate interpretation of ayurveda itihasa purana poetry prose anvaya philosophy and temple texts",EXPECTED_OUTCOME="The outcome is improved Sanskrit Tamil translation quality through robust tokenization methods that handle morphology compounds and long range dependencies By aligning tokens with linguistic and domain knowledge models better preserve grammatical agreement poetic structure anvaya interpretation and cultural nuance This leads to clearer more consistent translations of ayurvedic concepts historical narratives and literary texts supporting education research digital archives heritage studies and multilingual knowledge dissemination systems"
+#SBATCH --nodelist=gnode083
 
 # Ensure each process sees unique GPUs
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 # Activate SSLM virtual environment
-source ~/santam-tok/sslm-venv/bin/activate
+source /home2/$USER/sslm-venv/bin/activate
+
+# Choose the language's ISO code
+LANG=eng
 
 # Define directories
-export PT_DATA_DIR="$HOME/santam-tok/data-bin"
+export PT_DATA_DIR="$HOME/dataset/${LANG}"
+
+rm -r $PT_DATA_DIR/bin
+mkdir -p $PT_DATA_DIR/bin
+
+# Preprocess data
+python3 fairseq/fairseq_cli/preprocess.py  \
+    --only-source \
+    --trainpref $PT_DATA_DIR/train.${LANG} --validpref $PT_DATA_DIR/valid.${LANG} --testpref $PT_DATA_DIR/test.${LANG} \
+    --destdir $PT_DATA_DIR/bin
+
+
 # Directory containing existing vocab/lexicon files
-export PT_VOCAB_DIR="$HOME/santam-tok/model-bin"
+export PT_VOCAB_DIR="$HOME/dataset/${LANG}/bin"
 # Directory to save new model checkpoints
-export PT_SAVE_DIR="$HOME/santam-tok/model-bin-fast"
+SLURM_TMPDIR="/scratch/$USER"
+rm -r "${SLURM_TMPDIR}"
+mkdir -p "${SLURM_TMPDIR}"
+
+# setup huggingface cache
+export HF_HOME="${SLURM_TMPDIR}/.cache/huggingface"
+mkdir -p "$HF_HOME"
+
+mkdir -p "${SLURM_TMPDIR}/${LANG}"
+export PT_SAVE_DIR="${SLURM_TMPDIR}/${LANG}"
+# Setup huggingface repo
+export HF_TOKEN=""
+export HF_REPO_ID=""
+export HF_SUBFOLDER="${LANG}"
+export HF_DELETE_LOCAL=1 # delete local checkpoints after they are uploaded to remote
 
 # Create save directory if it doesn't exist
 mkdir -p $PT_SAVE_DIR
+mkdir -p $PT_VOCAB_DIR
 
 get_free_port() {
     python -c "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.bind(('', 0)); port = s.getsockname()[1]; s.close(); print(port)"
@@ -38,11 +68,12 @@ echo "MASTER_ADDR="$MASTER_ADDR
 
 # WandB Configuration
 export WANDB_API_KEY=""
-export WANDB_PROJECT="tsslm-te-pretraining-fast"
+export WANDB_PROJECT="tsslm-pretraining"
+export WANDB_NAME="${LANG}_sslm"
 
 # Hyperparameters for faster training
-# Reduced model size (Targeting ~1.5 days training time)
-# Config: Layers=3, Embed=128, FFN=512, Heads=4
+# Reduced model size (Small configuration)
+# Default was: layers=6, embed=512, ffn=2048, heads=8
 DECODER_LAYERS=3
 DECODER_EMBED_DIM=128
 DECODER_FFN_EMBED_DIM=512
@@ -63,20 +94,21 @@ echo "Max Seg Len: $MAX_SEG_LEN"
 # Using torchrun for distributed training
 torchrun  \
     --master_port $MASTER_PORT \
-    --nproc_per_node 2 \
+    --nproc_per_node 4 \
     --nnodes 1 \
     fairseq/fairseq_cli/train.py $PT_DATA_DIR/bin \
     --task subword_segmental_language_modeling \
     --arch transformer_sslm \
-    --target-lang te --save-interval 1 \
+    --target-lang ${LANG} --save-interval 1 \
     --criterion subword_segmental_lm_cross_entropy \
-    --max-epoch 2 --share-decoder-input-output-embed \
+    --max-epoch 5 --share-decoder-input-output-embed \
     --optimizer adam --adam-betas '(0.9, 0.98)' --weight-decay 0.01 --clip-norm 0.0 \
-    --lr 0.0005 --lr-scheduler inverse_sqrt --warmup-updates 4000 --warmup-init-lr 1e-07 \
+    --lr 0.0005 --lr-scheduler inverse_sqrt --warmup-updates 1000 --warmup-init-lr 1e-07 \
     --dropout 0.1 --skip-invalid-size-inputs-valid-test \
     --tokens-per-sample 512 --sample-break-mode none \
-    --max-tokens 4096 --vocabs-path $PT_VOCAB_DIR --update-freq 64 \
-    --keep-best-checkpoints 1  \
+    --max-tokens 4096 --vocabs-path $PT_VOCAB_DIR --update-freq 1 \
+    --keep-last-epochs -1 \
+    --patience 2 \
     --max-seg-len $MAX_SEG_LEN --lexicon-max-size 10000 \
     --log-interval 1 --fp16 --num-workers 4 \
     --wandb-project $WANDB_PROJECT \
@@ -85,3 +117,6 @@ torchrun  \
     --decoder-embed-dim $DECODER_EMBED_DIM \
     --decoder-ffn-embed-dim $DECODER_FFN_EMBED_DIM \
     --decoder-attention-heads $DECODER_ATTENTION_HEADS
+
+rm -rf "$SLURM_TMPDIR"
+

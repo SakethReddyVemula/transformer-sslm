@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=transformer-sslm-small
+#SBATCH --job-name=eng-sslm
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=20
 #SBATCH --gres=gpu:4
@@ -8,7 +8,7 @@
 #SBATCH --output=tsslm_pretraning.txt
 #SBATCH --mail-user=saketh.vemula@research.iiit.ac.in
 #SBATCH --mail-type=ALL
-#SBATCH --nodelist=gnode076
+#SBATCH --nodelist=gnode083
 
 # Ensure each process sees unique GPUs
 export CUDA_VISIBLE_DEVICES=0,1,2,3
@@ -35,7 +35,21 @@ python3 fairseq/fairseq_cli/preprocess.py  \
 # Directory containing existing vocab/lexicon files
 export PT_VOCAB_DIR="$HOME/dataset/${LANG}/bin"
 # Directory to save new model checkpoints
-export PT_SAVE_DIR="$HOME/models-bin/${LANG}"
+SLURM_TMPDIR="/scratch/$USER"
+rm -r "${SLURM_TMPDIR}"
+mkdir -p "${SLURM_TMPDIR}"
+
+# setup huggingface cache
+export HF_HOME="${SLURM_TMPDIR}/.cache/huggingface"
+mkdir -p "$HF_HOME"
+
+mkdir -p "${SLURM_TMPDIR}/${LANG}"
+export PT_SAVE_DIR="${SLURM_TMPDIR}/${LANG}"
+# Setup huggingface repo
+export HF_TOKEN=""
+export HF_REPO_ID=""
+export HF_SUBFOLDER="${LANG}"
+export HF_DELETE_LOCAL=1 # delete local checkpoints after they are uploaded to remote
 
 # Create save directory if it doesn't exist
 mkdir -p $PT_SAVE_DIR
@@ -53,7 +67,7 @@ export MASTER_ADDR=$master_addr
 echo "MASTER_ADDR="$MASTER_ADDR 
 
 # WandB Configuration
-export WANDB_API_KEY="c8a7a539cb5fed3df89b21d71956ca6b4befd2a5"
+export WANDB_API_KEY="`"
 export WANDB_PROJECT="tsslm-pretraining"
 export WANDB_NAME="${LANG}_sslm"
 
@@ -87,12 +101,12 @@ torchrun  \
     --arch transformer_sslm \
     --target-lang ${LANG} --save-interval 1 \
     --criterion subword_segmental_lm_cross_entropy \
-    --max-epoch 50 --share-decoder-input-output-embed \
+    --max-epoch 5 --share-decoder-input-output-embed \
     --optimizer adam --adam-betas '(0.9, 0.98)' --weight-decay 0.01 --clip-norm 0.0 \
-    --lr 0.0005 --lr-scheduler inverse_sqrt --warmup-updates 4000 --warmup-init-lr 1e-07 \
+    --lr 0.0005 --lr-scheduler inverse_sqrt --warmup-updates 1000 --warmup-init-lr 1e-07 \
     --dropout 0.1 --skip-invalid-size-inputs-valid-test \
     --tokens-per-sample 512 --sample-break-mode none \
-    --max-tokens 4096 --vocabs-path $PT_VOCAB_DIR --update-freq 64 \
+    --max-tokens 4096 --vocabs-path $PT_VOCAB_DIR --update-freq 1 \
     --keep-last-epochs -1 \
     --patience 2 \
     --max-seg-len $MAX_SEG_LEN --lexicon-max-size 10000 \
@@ -104,4 +118,5 @@ torchrun  \
     --decoder-ffn-embed-dim $DECODER_FFN_EMBED_DIM \
     --decoder-attention-heads $DECODER_ATTENTION_HEADS
 
+rm -rf "$SLURM_TMPDIR"
 
