@@ -1,4 +1,5 @@
 import streamlit as st
+import re
 import torch
 import os
 import sys
@@ -231,22 +232,50 @@ def main():
     st.sidebar.subheader("Hugging Face Source")
     hf_repo = st.sidebar.text_input("HF Repo ID", value=os.environ.get("HF_REPO_ID", ""))
     hf_token = st.sidebar.text_input("HF Token", value=os.environ.get("HF_TOKEN", ""), type="password")
+    lang_code = st.sidebar.text_input("Language Code (e.g. te, hi)", value=os.environ.get("LANG_CODE", ""))
     
     use_local = st.sidebar.checkbox("Use Local Checkpoints Only", value=not hf_repo)
     
     selected_ckpt_path = None
-    
+    all_checkpoints = [] # For animation
+
+    def get_ckpt_num(filename):
+        # Match digits after 'checkpoint' (with optional underscore)
+        # e.g. checkpoint1, checkpoint_1
+        match = re.search(r'checkpoint[_]?(\d+)', filename)
+        if match:
+            return int(match.group(1))
+        if 'last' in filename: return 999999
+        if 'best' in filename: return 999998
+        return 1000000
+
     if use_local:
         base_dir = os.path.abspath("checkpoints") # Default suggestion
         ckpt_dir = st.sidebar.text_input("Local Checkpoint Directory/File", value="")
+        
+        # If language code is provided, try to append it if valid dir
+        if lang_code and ckpt_dir and os.path.isdir(os.path.join(ckpt_dir, lang_code)):
+             ckpt_dir = os.path.join(ckpt_dir, lang_code)
+             st.sidebar.info(f"Using subdirectory: {ckpt_dir}")
+
         if ckpt_dir and os.path.isfile(ckpt_dir):
              selected_ckpt_path = ckpt_dir
+             all_checkpoints = [ckpt_dir]
         elif ckpt_dir and os.path.isdir(ckpt_dir):
              # List pt files
-             files = [f for f in os.listdir(ckpt_dir) if f.endswith('.pt')]
+             import glob
+             # Try to find pattern checkpoint_*.pt for animation
+             files = sorted([f for f in os.listdir(ckpt_dir) if f.endswith('.pt')])
+             # If we have numbered checkpoints, sort them intelligently
+             try:
+                 files.sort(key=get_ckpt_num)
+             except:
+                 pass
+             
              if files:
                  selected_file = st.sidebar.selectbox("Select Checkpoint", files)
                  selected_ckpt_path = os.path.join(ckpt_dir, selected_file)
+                 all_checkpoints = [os.path.join(ckpt_dir, f) for f in files]
              else:
                  st.sidebar.warning("No .pt files found in directory.")
     else:
@@ -257,10 +286,22 @@ def main():
                 
                 # List files
                 files = api.list_repo_files(repo_id=hf_repo)
+                
+                # Filter by language code if provided
+                if lang_code:
+                     files = [f for f in files if f.startswith(lang_code + "/") or f"/{lang_code}/" in f]
+                
                 ckpt_files = [f for f in files if f.endswith(".pt")]
+                # Sort intelligent
+                try:
+                     ckpt_files.sort(key=get_ckpt_num)
+                except:
+                     pass
+                
+                all_checkpoints = ckpt_files
                 
                 if not ckpt_files:
-                    st.sidebar.warning(f"No .pt files found in {hf_repo}")
+                    st.sidebar.warning(f"No .pt files found in {hf_repo} (Filter: {lang_code})")
                 else:
                     selected_ckpt_name = st.sidebar.selectbox("Select Remote Checkpoint", ckpt_files)
                     
@@ -278,9 +319,6 @@ def main():
                     
                     # Use cached path if available
                     if 'current_ckpt_path' in st.session_state and st.session_state.current_ckpt_path:
-                         # Simple check to see if it matches current selection likely
-                         # ideally we track what we downloaded.
-                         # For now, just rely on the button or persistence.
                          if selected_ckpt_name in st.session_state.current_ckpt_path: 
                             selected_ckpt_path = st.session_state.current_ckpt_path
                                  
@@ -292,6 +330,11 @@ def main():
             st.sidebar.info("Enter HF Repo ID to fetch checkpoints.")
 
     data_path = st.sidebar.text_input("Data Directory (containing dict.txt)", value="")
+    if lang_code and data_path and not data_path.endswith(lang_code):
+         # Suggest valid data path if lang is separate
+         possible_path = os.path.join(data_path, lang_code)
+         if os.path.exists(possible_path):
+             data_path = possible_path # Auto-update if detected
     
     st.sidebar.markdown("""
     **Note**: Ensure you have `fairseq` installed or available in the python path.
@@ -318,7 +361,17 @@ def main():
     # Input Area
     text = st.text_area("Input Text", "This is an example sentence.")
     
-    if st.button("Visualize"):
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        visualize_btn = st.button("Visualize")
+        
+    with col2:
+        animate_btn = st.button("Animate Checkpoints")
+        
+    visualization_container = st.empty()
+    
+    if visualize_btn:
         if 'model' in st.session_state and st.session_state.model:
             model = st.session_state.model
             task = st.session_state.task
@@ -327,10 +380,7 @@ def main():
             try:
                 segments = get_model_segmentation(model, task, text, device)
                 
-                st.markdown("### Segmentation")
-                
                 # Display colored segments
-                # Simple cycling colors
                 colors = ["#FFD700", "#ADD8E6", "#90EE90", "#FFB6C1", "#FFA07A"]
                 html = "<div style='line-height: 2.5; font-size: 18px;'>"
                 for i, seg in enumerate(segments):
@@ -338,8 +388,7 @@ def main():
                     html += f"<span style='background-color: {color}; padding: 2px 4px; border-radius: 4px; margin-right: 2px; color: black;'>{seg}</span>"
                 html += "</div>"
                 
-                st.markdown(html, unsafe_allow_html=True)
-                
+                visualization_container.markdown(html, unsafe_allow_html=True)
                 st.write("Segments List:", segments)
                 
             except Exception as e:
@@ -347,6 +396,85 @@ def main():
                 st.exception(e)
         else:
             st.warning("Please load a model first.")
+            
+    if animate_btn:
+        if not all_checkpoints:
+             st.warning("No checkpoints found to animate.")
+        else:
+             import time
+             # Filter checkpoints for strict checkpoint_N.pt pattern usually
+             # But we take all_checkpoints (Assuming sorted)
+             
+             st.info(f"Animating {len(all_checkpoints)} checkpoints...")
+             progress_bar = st.progress(0)
+             
+             for i, ckpt in enumerate(all_checkpoints):
+                 # Handle path if it's HF (ckpt is filename) or local (ckpt is path)
+                 # We need to ensure we have the file.
+                 
+                 current_path = ckpt
+                 display_name = os.path.basename(ckpt)
+                 
+                 if not use_local and hf_repo:
+                      # Need to ensure downloaded
+                      # Use cache or download silent?
+                      # This might be slow if not cached. 
+                      try:
+                         # cache_dir? hf_hub_download caches by default.
+                         current_path = hf_hub_download(repo_id=hf_repo, filename=ckpt, token=hf_token if hf_token else None)
+                      except Exception as e:
+                         # Skip if fail
+                         continue
+                 
+                 # Load model (bypass st.session_state to avoid overwriting usage state or caching animation artifacts permanently if desired, 
+                 # but load_model is cached. We might fill memory.
+                 # Let's trust load_model cache resource management (LRU defaults?) -> Actually st.cache_resource doesn't evict easily.
+                 # Proceed with caution.
+                 
+                 try:
+                     # We reuse load_model, which is cached. 
+                     # If users animate 50 checkpoints, we cache 50 models. 
+                     # Ideally we should use a non-cached loader for animation or clear cache.
+                     # For now, let's defined a temp unrestricted loader or just use it.
+                     
+                     # Simple logic: load, viz, delete?
+                     # Streamlit caching makes 'delete' hard.
+                     
+                     # Using `checkpoint_utils` directly to avoid app-level caching for animation frames
+                     # Re-implement minimal load
+                     models_anim, cfg_anim, task_anim = checkpoint_utils.load_model_ensemble_and_task(
+                        [current_path],
+                        arg_overrides={"data": data_path} if data_path else {}
+                     )
+                     model_anim = models_anim[0]
+                     model_anim.eval()
+                     # model_anim.cuda() # Avoid cuda OOM if we keep them. Usually one active is fine if we del.
+                     if torch.cuda.is_available(): model_anim.cuda()
+                     
+                     device_anim = next(model_anim.parameters()).device
+                     
+                     segments = get_model_segmentation(model_anim, task_anim, text, device_anim)
+                     
+                     # Render
+                     colors = ["#FFD700", "#ADD8E6", "#90EE90", "#FFB6C1", "#FFA07A"]
+                     html = f"<h4>Checkpoint: {display_name}</h4><div style='line-height: 2.5; font-size: 18px;'>"
+                     for idx, seg in enumerate(segments):
+                        color = colors[idx % len(colors)]
+                        html += f"<span style='background-color: {color}; padding: 2px 4px; border-radius: 4px; margin-right: 2px; color: black;'>{seg}</span>"
+                     html += "</div>"
+                     
+                     visualization_container.markdown(html, unsafe_allow_html=True)
+                     
+                     # Cleanup to free memory
+                     del model_anim
+                     del task_anim
+                     torch.cuda.empty_cache()
+                     
+                 except Exception as e:
+                     st.write(f"Error animating {display_name}: {e}")
+                 
+                 progress_bar.progress((i + 1) / len(all_checkpoints))
+                 time.sleep(0.5) # Pause for visual effect
 
 if __name__ == "__main__":
     main()
