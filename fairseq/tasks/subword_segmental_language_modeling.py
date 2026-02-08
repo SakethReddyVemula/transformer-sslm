@@ -39,6 +39,7 @@ from collections import Counter
 import torch
 import nltk
 import copy
+import unicodedata
 
 import time
 from fairseq.models.ssmt.ssmt_config import QuantNoiseConfig
@@ -55,6 +56,15 @@ def char_tokenize(line):
     return list(line)
 
 
+
+def is_alpha_extended(char):
+    if char.isalpha():
+        return True
+    if unicodedata.category(char) in ['Mn', 'Mc']:
+        return True
+    return False
+
+
 def tokenize_segs(line, max_seg_len, char_segs, non_alpha=False):
     # Split into all possible segments
     segs = []
@@ -67,7 +77,8 @@ def tokenize_segs(line, max_seg_len, char_segs, non_alpha=False):
         segs_n = ["".join(seg) for seg in segs_n]
 
         if not non_alpha and n > 1:  # Discard segments with non-alphabetical characters
-            segs_n = [seg for seg in segs_n if seg.isalpha() and len(seg) == n]
+            # Check if all characters in the segment are allowed (alpha or Mn/Mc)
+            segs_n = [seg for seg in segs_n if all(is_alpha_extended(c) for c in seg) and len(seg) == n]
         else:
             segs_n = [seg for seg in segs_n if len(seg) == n]
         segs.extend(segs_n)
