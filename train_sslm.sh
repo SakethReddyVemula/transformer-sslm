@@ -1,23 +1,23 @@
 #!/bin/bash
-#SBATCH --job-name=eng-sslm
+#SBATCH --job-name=tel-sslm
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=20
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:3
 #SBATCH --mem-per-cpu=2048
-#SBATCH --time=5-00:00:00
+#SBATCH --time=4-00:00:00
 #SBATCH --output=tsslm_pretraning.txt
 #SBATCH --mail-user=saketh.vemula@research.iiit.ac.in
 #SBATCH --mail-type=ALL
-#SBATCH --nodelist=gnode083
+#SBATCH --nodelist=gnode076
 
 # Ensure each process sees unique GPUs
-export CUDA_VISIBLE_DEVICES=0,1,2,3
+export CUDA_VISIBLE_DEVICES=0,1,2
 
 # Activate SSLM virtual environment
 source /home2/$USER/sslm-venv/bin/activate
 
 # Choose the language's ISO code
-LANG=eng
+LANG=tel
 
 # Define directories
 export PT_DATA_DIR="$HOME/dataset/${LANG}"
@@ -30,7 +30,6 @@ python3 fairseq/fairseq_cli/preprocess.py  \
     --only-source \
     --trainpref $PT_DATA_DIR/train.${LANG} --validpref $PT_DATA_DIR/valid.${LANG} --testpref $PT_DATA_DIR/test.${LANG} \
     --destdir $PT_DATA_DIR/bin
-
 
 # Directory containing existing vocab/lexicon files
 export PT_VOCAB_DIR="$HOME/dataset/${LANG}/bin"
@@ -67,7 +66,7 @@ export MASTER_ADDR=$master_addr
 echo "MASTER_ADDR="$MASTER_ADDR 
 
 # WandB Configuration
-export WANDB_API_KEY="`"
+export WANDB_API_KEY=""
 export WANDB_PROJECT="tsslm-pretraining"
 export WANDB_NAME="${LANG}_sslm"
 
@@ -94,12 +93,13 @@ echo "Max Seg Len: $MAX_SEG_LEN"
 # Using torchrun for distributed training
 torchrun  \
     --master_port $MASTER_PORT \
-    --nproc_per_node 4 \
+    --nproc_per_node 3 \
     --nnodes 1 \
     fairseq/fairseq_cli/train.py $PT_DATA_DIR/bin \
     --task subword_segmental_language_modeling \
     --arch transformer_sslm \
     --target-lang ${LANG} --save-interval 1 \
+    --save-interval-updates 500 --keep-interval-updates -1 \
     --criterion subword_segmental_lm_cross_entropy \
     --max-epoch 5 --share-decoder-input-output-embed \
     --optimizer adam --adam-betas '(0.9, 0.98)' --weight-decay 0.01 --clip-norm 0.0 \
@@ -110,7 +110,7 @@ torchrun  \
     --keep-last-epochs -1 \
     --patience 2 \
     --max-seg-len $MAX_SEG_LEN --lexicon-max-size 10000 \
-    --log-interval 1 --fp16 --num-workers 4 \
+    --log-interval 1 --fp16 --num-workers 3 \
     --wandb-project $WANDB_PROJECT \
     --save-dir $PT_SAVE_DIR \
     --decoder-layers $DECODER_LAYERS \
@@ -118,5 +118,4 @@ torchrun  \
     --decoder-ffn-embed-dim $DECODER_FFN_EMBED_DIM \
     --decoder-attention-heads $DECODER_ATTENTION_HEADS
 
-rm -rf "$SLURM_TMPDIR"
-
+rm -rf "$SLURM_TMPDIR" # Was rm -rf /scratch/$USER
