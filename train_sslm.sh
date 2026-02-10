@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=tel-sslm
+#SBATCH --job-name=hin-sslm
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=20
 #SBATCH --gres=gpu:3
@@ -17,9 +17,9 @@ export CUDA_VISIBLE_DEVICES=0,1,2
 source /home2/$USER/sslm-venv/bin/activate
 
 # Choose the language's ISO code
-LANG=tel
+LANG=hin
 
-# Define directories
+# Dehine directories
 export PT_DATA_DIR="$HOME/dataset/${LANG}"
 
 rm -r $PT_DATA_DIR/bin
@@ -99,14 +99,14 @@ torchrun  \
     --task subword_segmental_language_modeling \
     --arch transformer_sslm \
     --target-lang ${LANG} --save-interval 1 \
-    --save-interval-updates 500 --keep-interval-updates -1 \
+    --save-interval-updates 50 --keep-interval-updates -1 --validate-interval-updates 1000 \
     --criterion subword_segmental_lm_cross_entropy \
     --max-epoch 5 --share-decoder-input-output-embed \
     --optimizer adam --adam-betas '(0.9, 0.98)' --weight-decay 0.01 --clip-norm 0.0 \
     --lr 0.0005 --lr-scheduler inverse_sqrt --warmup-updates 1000 --warmup-init-lr 1e-07 \
     --dropout 0.1 --skip-invalid-size-inputs-valid-test \
     --tokens-per-sample 512 --sample-break-mode none \
-    --max-tokens 4096 --vocabs-path $PT_VOCAB_DIR --update-freq 1 \
+    --max-tokens 16384 --vocabs-path $PT_VOCAB_DIR --update-freq 1 \
     --keep-last-epochs -1 \
     --patience 2 \
     --max-seg-len $MAX_SEG_LEN --lexicon-max-size 10000 \
