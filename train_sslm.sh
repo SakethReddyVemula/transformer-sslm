@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=hin-sslm
+#SBATCH --job-name=mal-sslm
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=20
 #SBATCH --gres=gpu:3
@@ -8,7 +8,7 @@
 #SBATCH --output=tsslm_pretraning.txt
 #SBATCH --mail-user=saketh.vemula@research.iiit.ac.in
 #SBATCH --mail-type=ALL
-#SBATCH --nodelist=gnode076
+#SBATCH --nodelist=gnode084
 
 # Ensure each process sees unique GPUs
 export CUDA_VISIBLE_DEVICES=0,1,2
@@ -17,7 +17,7 @@ export CUDA_VISIBLE_DEVICES=0,1,2
 source /home2/$USER/sslm-venv/bin/activate
 
 # Choose the language's ISO code
-LANG=hin
+LANG=mal
 
 # Dehine directories
 export PT_DATA_DIR="$HOME/dataset/${LANG}"
@@ -119,3 +119,4 @@ torchrun  \
     --decoder-attention-heads $DECODER_ATTENTION_HEADS
 
 rm -rf "$SLURM_TMPDIR" # Was rm -rf /scratch/$USER
+
