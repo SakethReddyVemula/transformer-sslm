@@ -163,29 +163,40 @@ def save_checkpoint(cfg: CheckpointConfig, trainer, epoch_itr, val_loss):
         else:
             hf_repo_id = os.environ["HF_REPO_ID"]
             hf_subfolder = os.environ.get("HF_SUBFOLDER", "")
-            for cp in checkpoints:
-                try:
-                    path_in_repo = os.path.basename(cp)
-                    if hf_subfolder:
-                        path_in_repo = os.path.join(hf_subfolder, path_in_repo)
-                    
-                    logger.info(f"Uploading {cp} to Hugging Face Hub repo {hf_repo_id} at {path_in_repo}...")
-                    upload_file(
-                        path_or_fileobj=cp,
-                        path_in_repo=path_in_repo,
-                        repo_id=hf_repo_id,
-                        repo_type="model",
-                    )
-                    logger.info(f"Successfully uploaded {cp} to {hf_repo_id}")
-                    if os.environ.get("HF_DELETE_LOCAL") == "1":
-                        try:
-                            if os.path.exists(cp):
-                                os.remove(cp)
-                                logger.info(f"Deleted local checkpoint {cp} to save space.")
-                        except Exception as delete_error:
-                            logger.warning(f"Failed to delete local checkpoint {cp}: {delete_error}")
-                except Exception as e:
-                    logger.warning(f"Failed to upload {cp} to Hugging Face Hub: {e}")
+            
+            def upload_and_clean_checkpoints(checkpoints_to_upload, repo_id, subfolder, delete_local):
+                for cp in checkpoints_to_upload:
+                    try:
+                        path_in_repo = os.path.basename(cp)
+                        if subfolder:
+                            path_in_repo = os.path.join(subfolder, path_in_repo)
+                        
+                        logger.info(f"Asynchronously uploading {cp} to Hugging Face Hub repo {repo_id} at {path_in_repo}...")
+                        upload_file(
+                            path_or_fileobj=cp,
+                            path_in_repo=path_in_repo,
+                            repo_id=repo_id,
+                            repo_type="model",
+                        )
+                        logger.info(f"Successfully uploaded {cp} to {repo_id}")
+                        if delete_local == "1":
+                            try:
+                                if os.path.exists(cp):
+                                    os.remove(cp)
+                                    logger.info(f"Deleted local checkpoint {cp} to save space.")
+                            except Exception as delete_error:
+                                logger.warning(f"Failed to delete local checkpoint {cp}: {delete_error}")
+                    except Exception as e:
+                        logger.warning(f"Failed to upload {cp} to Hugging Face Hub: {e}")
+
+            import threading
+            delete_local_env = os.environ.get("HF_DELETE_LOCAL", "0")
+            upload_thread = threading.Thread(
+                target=upload_and_clean_checkpoints,
+                args=(checkpoints.copy(), hf_repo_id, hf_subfolder, delete_local_env)
+            )
+            upload_thread.daemon = False  # Let it finish if the script exits
+            upload_thread.start()
 
     if (
         not end_of_epoch
