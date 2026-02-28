@@ -164,57 +164,57 @@ def save_checkpoint(cfg: CheckpointConfig, trainer, epoch_itr, val_loss):
             hf_repo_id = os.environ["HF_REPO_ID"]
             hf_subfolder = os.environ.get("HF_SUBFOLDER", "")
             
-            def upload_and_clean_checkpoints(checkpoints_to_upload, repo_id, subfolder, delete_local):
-                for cp in checkpoints_to_upload:
-                    try:
-                        path_in_repo = os.path.basename(cp)
-                        if subfolder:
-                            path_in_repo = os.path.join(subfolder, path_in_repo)
-                        import sys
-                        import subprocess
-                        try:
-                            import httpx
-                        except ImportError:
-                            logger.info("httpx not found, installing it for HuggingFace uploads...")
-                            subprocess.check_call([sys.executable, "-m", "pip3", "install", "httpx"])
-                            import httpx
-                        
-                        logger.info(f"Asynchronously uploading {cp} to Hugging Face Hub repo {repo_id} at {path_in_repo}...")
-                        try:
-                            upload_file(
-                                path_or_fileobj=cp,
-                                path_in_repo=path_in_repo,
-                                repo_id=repo_id,
-                                repo_type="model",
-                                client_kwargs={"timeout": httpx.Timeout(300.0)},
-                            )
-                            logger.info(f"Successfully uploaded {cp} to {repo_id}")
-                        except (httpx.TimeoutException, httpx.ReadTimeout) as timeout_err:
-                            logger.warning(f"Upload to HF Hub timed out for {cp}: {timeout_err}")
-                        except Exception as upload_err:
-                            logger.warning(f"Failed to upload {cp} to Hugging Face Hub: {upload_err}")
-                            
-                        if delete_local == "1":
-                            try:
-                                if os.path.exists(cp):
-                                    os.remove(cp)
-                                    logger.info(f"Deleted local checkpoint {cp} to save space.")
-                            except Exception as delete_error:
-                                logger.warning(f"Failed to delete local checkpoint {cp}: {delete_error}")
-                    except Exception as e:
-                        logger.warning(f"Failed to upload {cp} to Hugging Face Hub: {e}")
-
-            import threading
+            import subprocess
+            import sys
             delete_local_env = os.environ.get("HF_DELETE_LOCAL", "0")
-            upload_thread = threading.Thread(
-                target=upload_and_clean_checkpoints,
-                args=(checkpoints.copy(), hf_repo_id, hf_subfolder, delete_local_env)
-            )
-            upload_thread.daemon = True  # Allows script to exit even if upload is stuck
-            upload_thread.start()
             
-            # We don't want to join() here because we want it to run in the background.
-            # But we can store the thread to let it be Garbage Collected or tracked if needed.
+            script = """
+import sys
+import os
+import logging
+try:
+    from huggingface_hub import upload_file
+except ImportError:
+    sys.exit(0)
+
+logging.basicConfig(level=logging.INFO, format='[HF Upload] %(message)s')
+logger = logging.getLogger('hf_upload')
+
+repo_id = sys.argv[1]
+subfolder = sys.argv[2]
+delete_local = sys.argv[3]
+checkpoints_to_upload = sys.argv[4:]
+
+for cp in checkpoints_to_upload:
+    try:
+        path_in_repo = os.path.basename(cp)
+        if subfolder:
+            path_in_repo = os.path.join(subfolder, path_in_repo)
+        
+        logger.info(f"Uploading {cp} to {repo_id} at {path_in_repo}...")
+        upload_file(
+            path_or_fileobj=cp,
+            path_in_repo=path_in_repo,
+            repo_id=repo_id,
+            repo_type="model",
+        )
+        logger.info(f"Successfully uploaded {cp} to {repo_id}")
+        if delete_local == "1":
+            try:
+                if os.path.exists(cp):
+                    os.remove(cp)
+                    logger.info(f"Deleted local checkpoint {cp} to save space.")
+            except Exception as delete_error:
+                logger.warning(f"Failed to delete local checkpoint {cp}: {delete_error}")
+    except Exception as e:
+        logger.warning(f"Failed to upload {cp} to Hugging Face Hub: {e}")
+"""
+            try:
+                cmd = [sys.executable, "-c", script, hf_repo_id, hf_subfolder, delete_local_env] + checkpoints.copy()
+                subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
+                logger.info(f"Spawned background process to upload {len(checkpoints)} checkpoints to {hf_repo_id}")
+            except Exception as e:
+                logger.warning(f"Failed to spawn background upload process: {e}")
 
     if (
         not end_of_epoch
