@@ -170,15 +170,30 @@ def save_checkpoint(cfg: CheckpointConfig, trainer, epoch_itr, val_loss):
                         path_in_repo = os.path.basename(cp)
                         if subfolder:
                             path_in_repo = os.path.join(subfolder, path_in_repo)
+                        import sys
+                        import subprocess
+                        try:
+                            import httpx
+                        except ImportError:
+                            logger.info("httpx not found, installing it for HuggingFace uploads...")
+                            subprocess.check_call([sys.executable, "-m", "pip3", "install", "httpx"])
+                            import httpx
                         
                         logger.info(f"Asynchronously uploading {cp} to Hugging Face Hub repo {repo_id} at {path_in_repo}...")
-                        upload_file(
-                            path_or_fileobj=cp,
-                            path_in_repo=path_in_repo,
-                            repo_id=repo_id,
-                            repo_type="model",
-                        )
-                        logger.info(f"Successfully uploaded {cp} to {repo_id}")
+                        try:
+                            upload_file(
+                                path_or_fileobj=cp,
+                                path_in_repo=path_in_repo,
+                                repo_id=repo_id,
+                                repo_type="model",
+                                client_kwargs={"timeout": httpx.Timeout(300.0)},
+                            )
+                            logger.info(f"Successfully uploaded {cp} to {repo_id}")
+                        except (httpx.TimeoutException, httpx.ReadTimeout) as timeout_err:
+                            logger.warning(f"Upload to HF Hub timed out for {cp}: {timeout_err}")
+                        except Exception as upload_err:
+                            logger.warning(f"Failed to upload {cp} to Hugging Face Hub: {upload_err}")
+                            
                         if delete_local == "1":
                             try:
                                 if os.path.exists(cp):
@@ -195,8 +210,11 @@ def save_checkpoint(cfg: CheckpointConfig, trainer, epoch_itr, val_loss):
                 target=upload_and_clean_checkpoints,
                 args=(checkpoints.copy(), hf_repo_id, hf_subfolder, delete_local_env)
             )
-            upload_thread.daemon = False  # Let it finish if the script exits
+            upload_thread.daemon = True  # Allows script to exit even if upload is stuck
             upload_thread.start()
+            
+            # We don't want to join() here because we want it to run in the background.
+            # But we can store the thread to let it be Garbage Collected or tracked if needed.
 
     if (
         not end_of_epoch
