@@ -87,47 +87,59 @@ def setup_fairseq_modules():
             spec.loader.exec_module(module)
 
 
-def get_model_segmentation(model, task, text: str, device):
-    """Run SSLM model in segment mode and return list of segment strings."""
+from torch.nn.utils.rnn import pad_sequence
+
+def get_model_segmentation_batch(model, task, texts: list, device):
+    """Run SSLM model in segment mode on a batch and return lists of segment strings."""
     tgt_dict = task.target_dictionary
 
     def char_tokenize(line):
         return list(line.strip())
 
-    tokens = tgt_dict.encode_line(
-        text, line_tokenizer=char_tokenize, add_if_not_exist=False, append_eos=False
-    ).long()
-
     eos_token = tgt_dict.eos()
-    target_tokens = torch.cat([tokens, torch.tensor([eos_token])]).unsqueeze(0).to(device)
+    batch_target_tokens = []
+    
+    for text in texts:
+        tokens = tgt_dict.encode_line(
+            text, line_tokenizer=char_tokenize, add_if_not_exist=False, append_eos=False
+        ).long()
+        target_tokens = torch.cat([tokens, torch.tensor([eos_token])])
+        batch_target_tokens.append(target_tokens)
 
-    sos_tensor = torch.full((1, 1), eos_token, dtype=torch.long, device=device)
-    prev_output_tokens = torch.cat([sos_tensor, target_tokens], dim=1)
+    pad_idx = tgt_dict.pad()
+    target_tokens_padded = pad_sequence(batch_target_tokens, batch_first=True, padding_value=pad_idx).to(device)
+
+    sos_tensor = torch.full((len(texts), 1), eos_token, dtype=torch.long, device=device)
+    prev_output_tokens = torch.cat([sos_tensor, target_tokens_padded], dim=1)
 
     with torch.no_grad():
-        split_indices = model(prev_output_tokens, mode="segment")
+        split_indices_batch = model(prev_output_tokens, mode="segment")
 
-    # Reconstruct raw text from token ids
-    raw_text = ""
-    target_list = target_tokens[0].cpu().tolist()
-    valid_indices = target_list[:-1] if target_list[-1] == eos_token else target_list
-    for idx in valid_indices:
-        raw_text += tgt_dict.symbols[idx]
-    raw_text = raw_text.replace("</s>", " ")
+    batch_segments = []
+    for i, seq_target in enumerate(batch_target_tokens):
+        # Reconstruct raw text from exact unpadded tokens
+        raw_text = ""
+        target_list = seq_target.tolist()
+        valid_indices = target_list[:-1] if target_list[-1] == eos_token else target_list
+        for idx in valid_indices:
+            raw_text += tgt_dict.symbols[idx]
+        raw_text = raw_text.replace("</s>", " ")
 
-    indices = split_indices[0]
-    if isinstance(indices, torch.Tensor):
-        indices = indices.tolist()
+        indices = split_indices_batch[i]
+        if isinstance(indices, torch.Tensor):
+            indices = indices.tolist()
 
-    segments = []
-    last_idx = 0
-    for end_idx in indices:
-        seg = raw_text[last_idx: end_idx + 1]
-        segments.append(seg)
-        last_idx = end_idx + 1
+        segments = []
+        last_idx = 0
+        for end_idx in indices:
+            seg = raw_text[last_idx: end_idx + 1]
+            segments.append(seg)
+            last_idx = end_idx + 1
 
-    segments = [s for s in segments if s]
-    return segments
+        segments = [s for s in segments if s]
+        batch_segments.append(segments)
+
+    return batch_segments
 
 
 def get_ckpt_num(filename: str):
@@ -148,18 +160,19 @@ def get_ckpt_num(filename: str):
 def evaluate_checkpoint(model, task, device,
                         infl_entries, deriv_entries,
                         ms: MorphyNetScore,
-                        morph_type: str, affix_type: str):
+                        morph_type: str, affix_type: str,
+                        batch_size: int = 128):
     """
     Evaluate a single model checkpoint against MorphyNet entries.
 
     Returns dict:  { category -> {precision, recall, f1, details} }
     """
-    def segment_fn(wordform: str):
+    def segment_fn(wordforms: list):
         try:
-            segs = get_model_segmentation(model, task, wordform, device)
-            return segs if segs else [wordform]
-        except Exception:
-            return [wordform]
+            segs_batch = get_model_segmentation_batch(model, task, wordforms, device)
+            return segs_batch
+        except Exception as e:
+            return [[wf] for wf in wordforms]
 
     return ms.evaluate_breakdown(
         infl_entries=infl_entries,
@@ -167,6 +180,7 @@ def evaluate_checkpoint(model, task, device,
         segment_fn=segment_fn,
         morph_type=morph_type,
         affix_type=affix_type,
+        batch_size=batch_size,
     )
 
 
@@ -204,7 +218,8 @@ def process_epoch(label: str, filename: str, args,
         results = evaluate_checkpoint(
             model, task, device,
             infl_entries, deriv_entries, ms,
-            args.morph_type, args.affix_type
+            args.morph_type, args.affix_type,
+            args.batch_size
         )
 
         # Log summary
@@ -268,6 +283,8 @@ def main():
                         help="Which morphology type to evaluate")
     parser.add_argument("--affix-type",   default="all",  choices=["suffix", "prefix", "all"],
                         help="Derivational affix type filter (ignored for inflectional)")
+    parser.add_argument("--batch-size",   type=int, default=128,
+                        help="Number of wordforms to segment per batch")
     args = parser.parse_args()
 
     hf_token = args.token or os.environ.get("HF_TOKEN")

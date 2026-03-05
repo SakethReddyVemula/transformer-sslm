@@ -50,6 +50,9 @@ AFFIX_TYPE=all
 # ── Dataset for Fairseq Dict ──────────────────────────────────────────────────
 DATASET_PATH="/home2/$USER/dataset"
 
+# ── Performance Configuration ──────────────────────────────────────────────────
+BATCH_SIZE=128
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 # data-dir: root directory containing language subfolders with MorphyNet TSV files
 #   e.g. data/eng/eng.inflectional.v1.tsv
@@ -69,7 +72,8 @@ python3 "${SCRIPT_DIR}/evaluate_checkpoints.py" \
     --token        "$HF_TOKEN"       \
     --dataset-path "$DATASET_PATH"   \
     --morph-type   "$MORPH_TYPE"     \
-    --affix-type   "$AFFIX_TYPE"
+    --affix-type   "$AFFIX_TYPE"     \
+    --batch-size   "$BATCH_SIZE"
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 rm -rf ~/.cache/huggingface/hub/models--*/  2>/dev/null || true

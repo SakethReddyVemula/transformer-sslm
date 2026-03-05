@@ -264,15 +264,17 @@ class MorphyNetScore:
     def evaluate(
         self,
         entries: List[Dict[str, Any]],
-        segment_fn: Callable[[str], List[str]],
+        segment_fn: Callable,
+        batch_size: int = 128
     ) -> Dict[str, Any]:
         """
         Evaluate a model over a list of MorphyNet entries.
 
         Args:
             entries:    Output of load_inflectional() or load_derivational()
-            segment_fn: Function that takes a wordform (str) and returns a list
-                        of segment strings (e.g. ['micro', 'tome', 's']).
+            segment_fn: Function that takes a list of wordforms and returns a list
+                        of segment string lists (e.g. [['micro', 'tome', 's']]).
+            batch_size: Number of wordforms to pass to segment_fn at once.
 
         Returns a dict with:
             {
@@ -288,20 +290,25 @@ class MorphyNetScore:
         precisions = []
         details = []
 
-        for entry in entries:
-            wordform = entry['wordform']
-            gold = entry['gold_morphemes']
+        for i in range(0, len(entries), batch_size):
+            batch_entries = entries[i:i + batch_size]
+            batch_wordforms = [entry['wordform'] for entry in batch_entries]
 
             try:
-                pred = segment_fn(wordform)
+                # Ensure the function knows how to handle a list
+                batch_preds = segment_fn(batch_wordforms)
             except Exception:
-                pred = [wordform]
+                batch_preds = [[wf] for wf in batch_wordforms]
 
-            r, p = self.morph_eval(gold, pred)
+            for entry, pred in zip(batch_entries, batch_preds):
+                wordform = entry['wordform']
+                gold = entry['gold_morphemes']
 
-            if not np.isnan(r):
-                recalls.append(r)
-                precisions.append(p)
+                r, p = self.morph_eval(gold, pred)
+
+                if not np.isnan(r):
+                    recalls.append(r)
+                    precisions.append(p)
 
             details.append({
                 'wordform': wordform,
@@ -338,9 +345,10 @@ class MorphyNetScore:
         self,
         infl_entries: Optional[List[Dict]] = None,
         deriv_entries: Optional[List[Dict]] = None,
-        segment_fn: Optional[Callable[[str], List[str]]] = None,
+        segment_fn: Optional[Callable] = None,
         morph_type: str = 'all',   # 'inflectional' | 'derivational' | 'all'
         affix_type: str = 'all',   # 'prefix' | 'suffix' | 'all'  (derivational only)
+        batch_size: int = 128,
     ) -> Dict[str, Dict]:
         """
         Run evaluation with fine-grained breakdown:
@@ -356,17 +364,17 @@ class MorphyNetScore:
         run_deriv = morph_type in ('derivational', 'all')
 
         if run_infl and infl_entries is not None:
-            results['inflectional'] = self.evaluate(infl_entries, segment_fn)
+            results['inflectional'] = self.evaluate(infl_entries, segment_fn, batch_size=batch_size)
 
         if run_deriv and deriv_entries is not None:
             for at in ('suffix', 'prefix'):
                 if affix_type not in (at, 'all'):
                     continue
                 subset = [e for e in deriv_entries if e.get('affix_type') == at]
-                results[f'derivational_{at}'] = self.evaluate(subset, segment_fn)
+                results[f'derivational_{at}'] = self.evaluate(subset, segment_fn, batch_size=batch_size)
 
             if affix_type == 'all':
-                results['derivational_all'] = self.evaluate(deriv_entries, segment_fn)
+                results['derivational_all'] = self.evaluate(deriv_entries, segment_fn, batch_size=batch_size)
 
         return results
 
