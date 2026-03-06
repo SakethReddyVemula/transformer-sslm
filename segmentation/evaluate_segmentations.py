@@ -51,68 +51,98 @@ def get_model_segmentation(model, task, text_list, device, batch_size=512):
     def char_tokenize(line):
         return list(line.strip())
 
-    for i in tqdm(range(0, len(text_list), batch_size), desc="Segmenting", leave=False):
-        batch_texts = text_list[i:i+batch_size]
-        batch_tokens = []
-        batch_lengths = []
+    i = 0
+    pbar = tqdm(total=len(text_list), desc="Segmenting", leave=False)
+    while i < len(text_list):
+        current_batch_size = batch_size
+        success = False
+        
+        while current_batch_size > 0:
+            batch_texts = text_list[i:i+current_batch_size]
+            batch_tokens = []
+            batch_lengths = []
 
-        for text in batch_texts:
-            tokens = tgt_dict.encode_line(
-                text, line_tokenizer=char_tokenize, add_if_not_exist=False, append_eos=False
-            ).long()
-            batch_tokens.append(tokens)
-            batch_lengths.append(tokens.size(0))
-        
-        # Enforce min length to avoid "stack expects a non-empty TensorList" error
-        max_len = max(max(batch_lengths) + 1, 10) 
-        
-        padded_batch = []
-        for tokens in batch_tokens:
-            t = torch.cat([tokens, torch.tensor([eos_token], dtype=torch.long)])
-            pad_len = max_len - t.size(0)
-            if pad_len > 0:
-                pad_tensor = torch.full((pad_len,), pad_token, dtype=torch.long)
-                t = torch.cat([t, pad_tensor])
-            padded_batch.append(t)
+            for text in batch_texts:
+                tokens = tgt_dict.encode_line(
+                    text, line_tokenizer=char_tokenize, add_if_not_exist=False, append_eos=False
+                ).long()
+                batch_tokens.append(tokens)
+                batch_lengths.append(tokens.size(0))
             
-        target_tokens = torch.stack(padded_batch).to(device)
-        sos_tensor = torch.full((target_tokens.size(0), 1), sos_token, dtype=torch.long, device=device)
-        prev_output_tokens = torch.cat([sos_tensor, target_tokens], dim=1)
-        
-        try:
-            with torch.no_grad():
-                batch_split_indices = model(prev_output_tokens, mode="segment")
-        except Exception as e:
-            print(f"Model batch failed, error: {e}")
+            # Enforce min length to avoid "stack expects a non-empty TensorList" error
+            max_len = max(max(batch_lengths) + 1, 10) 
+            
+            padded_batch = []
+            for tokens in batch_tokens:
+                t = torch.cat([tokens, torch.tensor([eos_token], dtype=torch.long)])
+                pad_len = max_len - t.size(0)
+                if pad_len > 0:
+                    pad_tensor = torch.full((pad_len,), pad_token, dtype=torch.long)
+                    t = torch.cat([t, pad_tensor])
+                padded_batch.append(t)
+                
+            target_tokens = torch.stack(padded_batch).to(device)
+            sos_tensor = torch.full((target_tokens.size(0), 1), sos_token, dtype=torch.long, device=device)
+            prev_output_tokens = torch.cat([sos_tensor, target_tokens], dim=1)
+            
+            try:
+                with torch.no_grad():
+                    batch_split_indices = model(prev_output_tokens, mode="segment")
+                success = True
+                break
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower() or "oom" in str(e).lower():
+                    del target_tokens, sos_tensor, prev_output_tokens
+                    if 'batch_split_indices' in locals():
+                        del batch_split_indices
+                    torch.cuda.empty_cache()
+                    import gc
+                    gc.collect()
+                    if current_batch_size == 1:
+                        print(f"OOM even with batch size 1 for text: '{batch_texts[0]}'")
+                        break
+                    current_batch_size = current_batch_size // 2
+                    print(f"OOM, reducing batch size to {current_batch_size}")
+                else:
+                    print(f"Model batch failed, error: {e}")
+                    break
+            except Exception as e:
+                print(f"Model batch failed, error: {e}")
+                break
+
+        if not success:
             for text in batch_texts:
                 results[text] = [text]
-            continue
+        else:
+            for j, text in enumerate(batch_texts):
+                raw_text = ""
+                for t_id in target_tokens[j].cpu().tolist():
+                    if t_id == eos_token: break
+                    raw_text += tgt_dict.symbols[t_id]
+                raw_text = raw_text.replace("</s>", " ")
+                
+                indices = batch_split_indices[j]
+                if isinstance(indices, torch.Tensor): 
+                    indices = indices.tolist()
+                
+                segments = []
+                last_idx = 0
+                for end_idx in indices:
+                    if end_idx >= len(raw_text): break
+                    seg = raw_text[last_idx : end_idx + 1]
+                    segments.append(seg)
+                    last_idx = end_idx + 1
+                
+                segments = [s for s in segments if s]
+                if last_idx < len(raw_text):
+                     segments.append(raw_text[last_idx:])
+                
+                results[text] = segments
 
-        for j, text in enumerate(batch_texts):
-            raw_text = ""
-            for t_id in target_tokens[j].cpu().tolist():
-                if t_id == eos_token: break
-                raw_text += tgt_dict.symbols[t_id]
-            raw_text = raw_text.replace("</s>", " ")
-            
-            indices = batch_split_indices[j]
-            if isinstance(indices, torch.Tensor): 
-                indices = indices.tolist()
-            
-            segments = []
-            last_idx = 0
-            for end_idx in indices:
-                if end_idx >= len(raw_text): break
-                seg = raw_text[last_idx : end_idx + 1]
-                segments.append(seg)
-                last_idx = end_idx + 1
-            
-            segments = [s for s in segments if s]
-            if last_idx < len(raw_text):
-                 segments.append(raw_text[last_idx:])
-            
-            results[text] = segments
+        i += current_batch_size
+        pbar.update(current_batch_size)
 
+    pbar.close()
     return results
 
 def get_checkpoints(args):
@@ -131,8 +161,8 @@ def get_checkpoints(args):
         base = os.path.basename(f)
         # m = re.search(r'checkpoint_(\d+)_(\d+)\.pt$', base)
         # if m: return (int(m.group(1)), int(m.group(2)))
-        # m = re.search(r'checkpoint(\d+)\.pt$', base)
-        m = re.search(r'checkpoint(2[2-5])\.pt$', base)
+        m = re.search(r'checkpoint(\d+)\.pt$', base)
+        # m = re.search(r'checkpoint(2[2-5])\.pt$', base)
         if m: return (int(m.group(1)), 999999)
         return (-1, -1)
         
@@ -222,6 +252,7 @@ def main():
         sys.exit(1)
             
     unique_words = list(word_counts.keys())
+    unique_words.sort(key=len)
     print(f"Loaded {len(unique_words)} unique words from dataset.")
     
     os.makedirs(args.output_dir, exist_ok=True)
